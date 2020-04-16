@@ -1,0 +1,22 @@
+// element 样式补丁
+.el-menu--horizontal>.el-submenu.is-active .el-submenu__title:hover {
+  background-color: transparent;
+}
+
+.el-table td,
+.el-table th {
+  padding: 2px 0 !important;
+}
+
+.el-table .el-table__header th {
+  background-color: #F5F7FA;
+  color: #303133;
+}
+
+.el-table .el-input__inner {
+  border: none;
+  border-radius: 0px;
+  padding: 0;
+  line-height: 28px;
+  height: 28px;
+}
