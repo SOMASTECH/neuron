@@ -1,0 +1,1212 @@
+:
+#shopt -s expand_aliases
+alias l='ls -l'
+alias lf='ls -C'
+alias echo='echo -e'
+
+# bin/neuronsrt   Neuron v1.0
+
+# ignore kill key
+trap "" 2
+
+#########################################################################
+#
+#	NEURON SYSTEM CONTROL SCRIPT
+#
+#	Copyright (C) 2019, Somas Technologies, Inc. All rights reserved.
+#
+#	This script file is used to start and control the Neuron v1.0.
+#
+#	Usage:		neuronsrt -h 	for details
+#
+#########################################################################
+
+dly=5
+statp=n fixup=n haltsys=n restart=n startnew=n stoprun=n newproj=n simul=n
+backgd=n term=n license=n docker=y
+
+#
+#	check if help
+#
+
+if [ "$1" = "-help" -o "$1" = "-HELP" -o "$1" = "-h" ]
+then
+	echo "
+Usage:	neuronsrt [-h] [-p] [-u] [-r] [-n] [-c] [-s] [-f] [-d] [-t] [-l]
+
+	neuronsrt -h    	print help
+	neuronsrt -p		print running status
+	neuronsrt -u		shutdown the system
+	neuronsrt -r		restart only
+	neuronsrt -n		restart with new configuration
+	neuronsrt -c		clear all and start new 
+	neuronsrt -s		stop neuron
+	neuronsrt -f		fix neuron directories
+	neuronsrt -d		start with simulation driver 
+	neuronsrt -t		start terminal 
+	neuronsrt -l		start license set up 
+"
+	exit 0
+fi
+
+
+#
+#	check NEURONPATH
+#
+
+if [ "$NEURONPATH" = "" ]
+then
+	NEURONPATH=$HOME
+	export NEURONPATH
+fi
+if [ "$NEURONDATPATH" = "" ]
+then
+	NEURONDATPATH=$NEURONPATH/dat
+	export NEURONDATPATH
+fi
+if [ "$NEURONTMP" = "" ]
+then
+	NEURONTMP=/tmp/neurontmp
+	export NEURONTMP
+fi
+cd $NEURONPATH
+
+
+#
+#	get user name
+#
+
+logname=`logname 2>/dev/null`
+if [ "$logname" = "" ]
+then
+	logname=$LOGNAME
+fi
+if [ "$logname" = "" ]
+then
+	logname=$USER
+fi
+
+
+#
+#	check switches
+#
+
+while [ "$*" != "" ]
+do
+	case $1 in
+		-p)	statp=y
+			break
+			;;
+		-f)	fixup=y
+			break
+			;;
+		-b)	backgd=y
+			;;
+		-d)	simul=y					
+			;;
+		-t)	term=y					
+			;;
+		-l)	license=y					
+			;;
+		-s)
+			echo "Stop Neuron System ..."
+			stoprun=y
+			break
+			;;
+		-r)	
+			echo "Restart Neuron System ..."
+			restart=y
+			break
+			;;
+		-n)	
+			echo "Restart New Neuron System ..."
+			newproj=y
+			break
+			;;
+		-c)	
+			echo "Clear all and Start New Neuron System ..."
+			startnew=y
+			break
+			;;
+		-u)	
+			echo "Shutdown Linux System ..."
+			haltsys=y
+			break
+			;;
+		--)	shift
+			break
+			;;
+		-*)	echo "neuronsrt: error switch $1"
+			exit 1
+			;;
+		*)	break
+			;;
+	esac
+	shift
+done
+
+#
+#	select default parameters
+#
+
+# communication driver
+
+rundriver ( ) {
+
+	ODRIVER=simdrv
+	if [ $simul != y ]
+	then
+		cd $NEURONDATPATH
+		files=`ls chn`
+		if [ "$files" != "" ]
+		then
+			for I in $files
+			do
+				ODRIVER=$I
+				break
+			done
+		fi
+	fi
+}
+
+#
+#		GET YES/NO
+#
+#	This process echo the argument(s) and waits for an answer. The
+#	return value is non-zero for no.
+#
+#	Syntax:		getyn [-y | -n] [-t] [string]
+#
+#				-y	yes as default
+#				-n	no as default
+#				-t	truncate (don't echo) the (y/n)? 
+#
+
+getyn ( ) {
+
+	y=y n=n
+	
+	while test $# != 0							# check options
+	do
+		case $1 in
+			-y)	y='<y>'
+				;;
+			-n)	n='<n>'
+				;;
+			-t)	t=yes
+				;;
+			--)	shift
+				break
+				;;
+			-*)	echo "getyn: Error in switch $1"
+				;;
+			*)	break
+				;;
+		esac
+		shift
+	done
+	
+	if test $y = '<y>' -a $n = '<n>'
+	then
+		y=y
+	fi
+	
+	if test "$t" != yes
+	then
+		str=" ($y/$n)? "
+	else
+		y=y n=n
+	fi
+	
+	while true								# main loop
+	do
+		echo "$*$str"
+		read -e yn
+		case $yn in
+		[yY])
+			return 0
+			;;
+		[nN])
+			return 1
+			;;
+		"")
+			if test $n = '<n>'
+			then
+				return 1
+			elif test $y = '<y>'
+			then
+				return 0
+			fi
+			;;
+		*)
+			;;
+		esac
+	done
+
+}
+
+#
+#	CHECK IF MODIFY .bash_profile
+#
+#	This process waits for an answer of modification of bash_profile. The
+#	return value is non-zero for no.
+#
+#	Syntax:		checkmodprof
+#
+
+checkmodprof ( ) {
+
+	if [ $docker = n ] || ([ $docker = y ] && [ -f $HOME/.bash_profile ]);
+	then
+		echo "This will modify your .bash_profile file"
+		if grep "Neuron System environment" $HOME/.bash_profile >/dev/null
+		then
+			:
+		else
+			echo 
+				"Save .bash_profile as .bash_profileold before change"
+			cp $HOME/.bash_profile $HOME/.bash_profileold
+			echo "
+#
+#	Neuron System environment
+#" >>$HOME/.bash_profile
+		fi
+	fi
+	return 0
+}
+
+
+#
+#	UPDATE IF NEURON VARIABLES in .bash_profile
+#
+#	This process waits for an answer to check neuron variables in bash_profile
+#	update the .bash_profile for neuron variables if necessary.
+#
+#	Syntax:		doupdatevars
+#
+
+doupdatevars ( ) {
+
+	if [ $docker = n ] || ([ $docker = y ] && [ -f $HOME/.bash_profile ]);
+	then
+		echo "The Neuron System environment variables will automatically be included"
+		if checkmodprof
+		then
+			if grep "PATH=" $HOME/.bash_profile >/dev/null
+			then
+				:
+			else
+				echo "PATH=\$PATH:\$HOME/bin:." >>$HOME/.bash_profile
+			fi
+			if grep "NEURONPATH=" $HOME/.bash_profile >/dev/null
+			then
+				:
+			else
+				if [ $NEURONPATH = $HOME ]
+				then
+					echo "NEURONPATH=\$HOME" >>$HOME/.bash_profile
+				else
+					echo "NEURONPATH=$NEURONPATH" >>$HOME/.bash_profile
+				fi
+				echo "export NEURONPATH" >>$HOME/.bash_profile
+			fi
+			if grep "NEURONDATPATH=" $HOME/.bash_profile >/dev/null
+			then
+				:
+			else
+				if [ $NEURONDATPATH = $NEURONPATH/dat ]
+				then
+					echo "NEURONDATPATH=\$NEURONPATH/dat" >>$HOME/.bash_profile
+				else
+					echo "NEURONDATPATH=$NEURONDATPATH" >>$HOME/.bash_profile
+				fi
+				echo "export NEURONDATPATH" >>$HOME/.bash_profile
+			fi
+		fi
+	fi
+}
+
+#
+#	UPDATE IF NEURON CONFIGURATION dat/.env
+#
+#	This process will check neuron variables in dat/.env file
+#	update the dat/.env for neuron variables if necessary.
+#
+#	Syntax:		doupdateconf
+#
+
+doupdateconf ( ) {
+
+	if [ -f $HOME/dat/.env ]
+	then
+		if grep "NEURONPATH=" $HOME/dat/.env >/dev/null
+		then
+			:
+		else
+			if [ $NEURONPATH = $HOME ]
+			then
+				echo "NEURONPATH=$HOME" >>$HOME/dat/.env
+			else
+				echo "NEURONPATH=$NEURONPATH" >>$HOME/dat/.env
+			fi
+			echo "export NEURONPATH" >>$HOME/dat/.env
+		fi
+		if grep "NEURONDATPATH=" $HOME/dat/.env >/dev/null
+		then
+			:
+		else
+			if [ $NEURONDATPATH = $NEURONPATH/dat ]
+			then
+				echo "NEURONDATPATH=$NEURONPATH/dat" >>$HOME/dat/.env
+			else
+				echo "NEURONDATPATH=$NEURONDATPATH" >>$HOME/dat/.env
+			fi
+			echo "export NEURONDATPATH" >>$HOME/dat/.env
+		fi
+		if grep "HOSTNAME=" $HOME/dat/.env >/dev/null
+		then
+			:
+		else
+			echo "HOSTNAME=$HOSTNAME" >>$HOME/dat/.env
+			echo "export HOSTNAME" >>$HOME/dat/.env
+		fi
+	else
+		if [ $NEURONPATH = $HOME ]
+		then
+			echo "NEURONPATH=$HOME" >>$HOME/dat/.env
+		else
+			echo "NEURONPATH=$NEURONPATH" >>$HOME/dat/.env
+		fi
+		echo "export NEURONPATH" >>$HOME/dat/.env
+		if [ $NEURONDATPATH = $NEURONPATH/dat ]
+		then
+			echo "NEURONDATPATH=$NEURONPATH/dat" >>$HOME/dat/.env
+		else
+			echo "NEURONDATPATH=$NEURONDATPATH" >>$HOME/dat/.env
+		fi
+		echo "export NEURONDATPATH" >>$HOME/dat/.env
+		echo "HOSTNAME=$HOSTNAME" >>$HOME/dat/.env
+		echo "export HOSTNAME" >>$HOME/dat/.env
+	fi
+}
+
+#
+#	UPDATE IF NEURON VERSION dat/vers
+#
+#	This process will check neuron version number in dat/vers file
+#	update the dat/vers for neuron version number if necessary.
+#
+#	Syntax:		doupdatevers
+#
+
+doupdatevers ( ) {
+
+	if [ -f $HOME/dat/vers ]
+	then
+		if grep "NEURONVERSNO=" $HOME/dat/vers >/dev/null
+		then
+			:
+		else
+			echo "NEURONVERSNO=1" >>$HOME/dat/vers
+			echo "export NEURONVERSNO" >>$HOME/dat/vers
+		fi
+	else
+		echo "NEURONVERSNO=1" >>$HOME/dat/vers
+		echo "export NEURONVERSNO" >>$HOME/dat/vers
+	fi
+	if grep "NEURONAPPLREV=" $HOME/dat/.env >/dev/null
+	then
+		:
+	else
+		echo "NEURONAPPLREV=0" >>$HOME/dat/vers
+		echo "export NEURONAPPLREV" >>$HOME/dat/vers
+	fi
+}
+
+#
+#	function Internet
+#
+#	syntax: check_connectivity
+#
+#
+
+check_connectivity ( ) {
+	
+	local test_ip
+	local test_count
+
+	test_ip="8.8.8.8"
+	test_count=1
+
+	if ping -q -c ${test_count} ${test_ip} > /dev/null;
+	then
+		retval=1
+	else
+		retval=0
+	fi
+	return $retval
+}
+
+#
+#	function start
+#
+#	syntax:	runstart  
+#
+#
+
+runstart ( ) {
+
+	if	ps -u $logname | grep neuron_mgr >/dev/null
+		test $? != 0
+	then
+		$NEURONPATH/bin/neuron_mgr&
+		echo -e "\nStarting neuron_mgr ..."
+	else
+		echo -e "\nneuron_mgr already started"
+	fi
+
+	if	ps -u $logname | grep neuron_o_ >/dev/null
+		test $? != 0
+	then
+		$NEURONPATH/bin/neuron_o_$ODRIVER&
+		echo "Starting neuron_o_$ODRIVER ..."
+	else
+		echo "neuron_o_$ODRIVER already started"
+	fi
+
+	if	ps -u $logname | grep neuron_tmr >/dev/null
+		test $? != 0
+	then
+		$NEURONPATH/bin/neuron_tmr&
+		echo "Starting neuron_tmr ..."
+	else
+		echo "neuron_tmr already started"
+	fi
+	
+	if	ps -u $logname | grep neuron_sec >/dev/null
+		test $? != 0
+	then
+		$NEURONPATH/bin/neuron_sec&
+		echo "Starting neuron_sec ..."
+	else
+		echo "neuron_sec already started"
+	fi
+	
+	if	ps -u $logname | grep neuron_web >/dev/null
+		test $? != 0
+	then
+		$NEURONPATH/bin/neuron_web&
+		echo "Starting neuron_web ..."
+	else
+		echo "neuron_web already started"
+	fi
+
+	if	ps -u $logname | grep neuron_srv >/dev/null
+		test $? != 0
+	then
+		$NEURONPATH/bin/neuron_srv&
+		echo "Starting neuron_srv ..."
+	else
+		echo "neuron_srv already started"
+	fi
+
+	wait $!
+	retval=$?
+	return $retval
+
+
+}
+
+
+#
+#	function runstatus
+#
+#	syntax:	runstatus [-c]
+#
+#			where	-c		only display status
+#					-p		only return status value
+#
+
+runstatus ( ) {
+
+	if [ "$1" = -c ]
+	then
+		ps -u $logname | grep -v grep | fgrep 'neuron_
+PID'
+	elif ps -u $logname | grep -v grep | fgrep neuron_mgr >/dev/null &&
+	     ps -u $logname | grep -v grep | fgrep neuron_o_ >/dev/null &&
+	     ps -u $logname | grep -v grep | fgrep neuron_tmr >/dev/null &&
+	     ps -u $logname | grep -v grep | fgrep neuron_sec >/dev/null &&
+	     ps -u $logname | grep -v grep | fgrep neuron_web >/dev/null &&
+	     ps -u $logname | grep -v grep | fgrep neuron_srv >/dev/null 
+	then
+		if [ "$1" = -p ]
+		then
+			cleanup
+			return 1
+		else
+		echo
+		echo "Neuron System is currently running and must be stopped before new project"
+		echo "Aborted ..."
+		echo
+		cleanup
+		return 1
+		fi
+	fi
+	return 0
+}
+
+
+#
+#	function runstop
+#
+#	syntax:	runstop
+#
+#
+
+runstop ( ) {
+
+	echo "Prepare to stop ..."
+	while [ $dly != 0 ]
+	do
+		dly=`expr $dly - 1`
+		sleep 1
+	done
+	echo "Stopping ..."
+
+	#
+	#	kill script neuronsrt
+	#
+	
+	for sig in -15 -15 -15 -9
+	do
+		pids=`ps -u $logname | awk ""'$4 == "neuronsrt"'" { print "'$1'" }"`
+		[ "$pids" ] || break
+		kill $sig $pids
+		sleep 1
+		ps -u $logname | grep -v grep | grep neuron_ | grep -v neuron_mgr >/dev/null || break
+		sleep 2
+	done
+
+	#
+	#	kill all except neuron_mgr
+	#
+	
+	for sig in -15 -15 -15 -9
+	do
+		pids=`ps -u $logname | grep -v grep | \
+				awk ""'$4~/neuron_/'" && "'$4 != "neuron_mgr"'" { print "'$1'" }"`
+		[ "$pids" ] || break
+		kill $sig $pids
+		sleep 1
+		ps -u $logname | grep -v grep | grep neuron_ | grep -v neuron_mgr >/dev/null || break
+		sleep 2
+	done
+
+	#
+	#	kill neuron_mgr
+	#
+	
+	for sig in -15 -15 -15 -15 -15 -15 -9
+	do
+		pids=`ps -u $logname | awk ""'$4 == "neuron_mgr"'" { print "'$1'" }"`
+		[ "$pids" ] || break
+		kill $sig $pids
+		sleep 1
+		ps -u $logname | grep neuron_mgr >/dev/null || break
+		sleep 2
+		ps -u $logname | grep neuron_mgr >/dev/null || break
+		sleep 10
+	done
+	
+	#	check if remaining neuron_ processes
+	
+	if ps -u $logname | grep -v grep | grep neuron_ >/dev/null
+	then
+		echo "WARNING! Following processes are still present\007"
+		ps -u $logname | grep -v grep | grep neuron_
+		echo "Push ENTER to continue ..."
+		read -e dmy
+		return 1
+	fi
+	return 0
+}
+
+
+#
+#		
+#	function runshutdown
+#
+#	syntax:	runshutdown
+#
+#
+
+runshutdown ( ) {
+
+	#
+	#	and finally, init
+	#
+	
+	echo "Init ..."
+	sleep 5
+	sudo -u root init 0
+	#	sleep forever
+	while true
+	do
+		sleep 10
+	done
+
+}
+
+
+#
+#	function runfixdir
+#
+#	syntax:	runfixdir
+#
+#
+
+runfixdir ( ) {
+
+	#
+	#	CHECK NEURONPATH
+	#
+	
+	if [ "$NEURONPATH" = "" -o "$NEURONDATPATH" = "" ]
+	then
+		echo "NEURONPATH/NEURONDATPATH doesn't exist"
+		echo "Aborted ..."
+		return 1
+	fi
+	
+	if cd $NEURONPATH
+	then
+		:
+	else
+		echo "Fatal error, cannot cd to $NEURONPATH"
+		echo "Aborted ..."
+		return 1
+	fi
+
+	#
+	#	CREATE dat
+	#
+	
+	first=0
+	
+	if [ ! -d $NEURONPATH/dat ]
+	then
+		mkdir dat
+		echo "In `pwd`:"
+		first=1
+		echo "	dat created"
+	fi
+	
+	if	cd $NEURONDATPATH
+	then
+		:
+	else
+		echo "Fatal error, cannot cd to $NEURONDATPATH"
+		echo "Aborted ..."
+		return 1
+	fi
+
+
+	#
+	#	FIX dat DIRECTORY
+	#
+	
+	dirlist="adm alm chn cfg log scp obj tmp trd"
+	
+	cd $NEURONDATPATH
+	
+	# check unexpected files/dirs
+	
+	for curdir in *
+	do
+		if [ -d $curdir ]
+		then
+			dirok=0
+			for valdir in $dirlist
+			do
+				if [ $curdir = $valdir ]
+				then
+					dirok=1
+					break
+				fi
+			done
+			if [ $dirok = 0 ]
+			then
+				echo "Fatal error, unexpected directory `pwd`/$curdir, "\
+						"must be removed manually."
+				echo "Aborted ..."
+				return 1
+			fi
+		else
+			if [ $curdir = "*" -o $curdir = vers -o $curdir = .env ]
+			then
+				continue
+			fi
+			echo "Unexpected file $curdir in `pwd`, removed"
+			rm -f $curdir
+		fi
+	done
+
+	# fix directories
+	
+	first=0
+	for curdir in $dirlist
+	do
+		if [ ! -d $curdir ]
+		then
+			mkdir $curdir
+			if [ $first = 0 ]
+			then
+				echo "In `pwd`:"
+				first=1
+			fi
+			echo "	$curdir created"
+		fi
+	done
+
+	# fix adm/*
+	
+	cd $NEURONDATPATH/adm
+	first=0
+	for curdir in usr
+	do
+		if [ ! -d $curdir ]
+		then
+			mkdir $curdir
+			if [ $first = 0 ]
+			then
+				echo "In `pwd`:"
+				first=1
+			fi
+			echo "	$curdir created"
+		fi
+	done
+	
+	# fix scp/*
+	
+	cd $NEURONDATPATH/scp
+	first=0
+	for curdir in subr
+	do
+		if [ ! -d $curdir ]
+		then
+			mkdir $curdir
+			if [ $first = 0 ]
+			then
+				echo "In `pwd`:"
+				first=1
+			fi
+			echo "	$curdir created"
+		fi
+	done
+	
+	cd $NEURONDATPATH
+	
+	files=`ls alm`
+	if [ "$files" != "" ]
+	then
+		echo "Remove any alarm files"
+		rm -f alm/* 1>/dev/null 2>&1 
+	fi
+	
+	files=`ls log`
+	if [ "$files" != "" ]
+	then
+		echo "Remove any log files"
+		rm -f log/* 1>/dev/null 2>&1 
+	fi
+	
+	files=`ls tmp`
+	if [ "$files" != "" ]
+	then
+		echo "Remove any tmp files"
+		rm -fr tmp/* 1>/dev/null 2>&1 
+	fi
+	
+	files=`ls trd`
+	if [ "$files" != "" ]
+	then
+		echo "Remove any trend files"
+		rm -f trd/* 1>/dev/null 2>&1 
+	fi
+	
+	files=`ls scp/subr`
+	if [ "$files" != "" ]
+	then
+		echo "Remove any subroutine files"
+		rm -f scp/subr/* 1>/dev/null 2>&1 
+	fi
+	
+	files="glvar main auto man"
+	for file in $files
+	do
+		if [ -f scp/$file ]
+		then
+			if [ $file = glvar ]
+			then
+				echo "scp/glvar - global variables, removed"
+			elif [ $file = main ]
+			then
+				echo "scp/main - main routine, removed"
+			elif [ $file = auto ]
+			then
+				echo "scp/auto - auto routine, removed"
+			elif [ $file = man ]
+			then
+				echo "scp/man - manual routine, removed"
+			fi
+			rm -f scp/$file 1>/dev/null 2>&1 
+		fi
+	done
+
+	objlist="shmstat dbctrl objdat alrdat"
+	for file in $objlist
+	do
+		if [ -f obj/$file ]
+		then
+			if [ $file = shmstat ]
+			then
+				echo "obj/shmstat - status in shared memory, removed"
+			elif [ $file = dbctrl ]
+			then
+				echo "obj/dbctrl - data base control, removed"
+			elif [ $file = objdat ]
+			then
+				echo "obj/objdat - object data base, removed"
+			elif [ $file = alrdat ]
+			then
+				echo "obj/alrdat - object data base, removed"
+			fi
+			rm -f obj/$file 1>/dev/null 2>&1 
+		fi
+	done
+
+	#
+	#	CLEANUP DATA BASE HEADER AND DATA FILES
+	#
+	
+	cd $NEURONDATPATH
+	
+	if [ -f obj/dbhdr -o -f obj/dbval ]
+	then
+		echo "Remove data base header and data files"
+		rm -f obj/dbhdr obj/dbval 1>/dev/null 2>&1 
+	fi
+	return 0
+}
+
+
+#
+#	function cleanup
+#
+#	syntax:	cleanup
+#
+#
+
+cleanup ( ) {
+
+	if [ -d $NEURONTMP ]
+	then
+		CLNWD=`pwd`
+		if cd $NEURONTMP
+		then
+			rm -fr .[a-z]* * >/dev/null 2>&1
+			cd ..
+			rmdir $NEURONTMP
+			if [ $CLNWD = $NEURONTMP ]
+			then
+				cd $NEURONPATH
+			else
+				cd $CLNWD
+			fi
+		fi
+	fi
+	
+}
+
+
+
+#	function runnewproj
+#
+#	syntax:	runnewproj
+#
+#
+
+runnewproj ( ) {
+
+	runstatus
+	if [ $? = 1 ]
+	then
+		return 1
+	fi
+	cd $HOME
+	echo "Update .bash_profile for neuron environment variables"
+	doupdatevars
+	echo "Fix the dat directories"
+	runfixdir
+	if [ $? = 1 ]
+	then
+		echo "Error: dat directories"
+		return 1
+	fi
+	echo "Update dat/.env for configuration file"
+	doupdateconf
+#	echo "Update dat/vers for neuron version file"
+#	doupdatevers
+	return 0
+}
+
+
+#
+#	do it all
+#
+
+while true
+do
+	
+	if [ $license = y ]
+	then
+		check_connectivity
+		if [ $? = 0 ]
+		then
+			echo "no Internet connection !"
+			sleep 3
+			cleanup
+			exit 9
+		fi
+
+		runstatus -p
+		if [ $? = 1 ]
+		then
+			if	ps -u $logname | grep neuron_usg >/dev/null
+				test $? != 0
+			then
+				$NEURONPATH/bin/neuron_usg
+			else
+				echo "neuron_usg already started"
+			fi
+		else
+			echo "neuron is not yet running"
+		fi
+		exit 0
+	fi
+
+	if [ $term = y ]
+	then
+		runstatus -p
+		if [ $? = 1 ]
+		then
+			if [ $docker = n -a "$TERMINFO" = "" ]
+			then
+				if [ -f /usr/share/terminfo/x/xterm ]
+				then
+					export TERM=xterm
+					export TERMINFO=/usr/share/terminfo
+				elif [ -f /lib/terminfo/x/xterm ]
+				then
+					export TERM=xterm
+					export TERMINFO=/lib/terminfo
+				fi
+			fi
+			if	ps -u $logname | grep neuron_ter >/dev/null
+				test $? != 0
+			then
+				$NEURONPATH/bin/neuron_ter
+			else
+				echo "neuron_ter already started"
+			fi
+		else
+			echo "neuron is not yet running"
+		fi
+		exit 0
+	fi
+
+	if [ $statp = y ]
+	then
+		runstatus -c
+		runstatus -p
+		if [ $? = 0 ]
+		then
+			exit 1
+		fi
+		exit 0
+	fi
+
+	if [ $fixup = y ]
+	then
+		runfixdir
+		if [ $? = 1 ]
+		then
+			sleep 3
+			cleanup
+			exit 9
+		fi
+		exit 0
+	fi
+	
+	if [ $haltsys = y ]
+	then
+		runstop	
+		sleep 1
+		runshutdown	
+		exit 0
+	fi
+	
+	if [ $stoprun = y ]
+	then
+		runstop		
+		if [ $? = 1 ]
+		then
+			sleep 3
+			cleanup
+			exit 9
+		fi	
+		exit $?
+	fi
+	
+	if [ $restart = y -o $newproj = y ]
+	then
+		runstop	
+		if [ $? = 1 ]
+		then
+			sleep 3
+			cleanup
+			exit 9
+		fi
+		if [ $newproj = y ]
+		then	
+			runnewproj
+			if [ $? = 1 ]
+			then
+				sleep 3
+				cleanup
+				exit 9
+			fi
+			newproj=n
+		fi
+	fi
+	
+	if [ $stoprun != y -a $statp != y -a $haltsys != y -a $fixup != y ]
+	then
+	
+		#
+		#	start
+		#
+
+		if [ ! -d $NEURONDATPATH ]
+		then
+			runnewproj
+			if [ $? = 1 ]
+			then
+				sleep 3
+				cleanup
+				exit 9
+			fi
+			newproj=n
+		fi
+
+		rundriver
+		if [ $backgd != y -a $simul = y ]
+		then
+			if [ $docker = y ]
+			then
+				runstart
+			else
+				exec ~/bin/neuronsrt -d -b &
+				exit 0
+			fi
+		elif [ $backgd != y ]
+		then
+			if [ $docker = y ]
+			then
+				runstart
+			else
+				exec ~/bin/neuronsrt -b &
+				exit 0
+			fi
+		elif [ $startnew = y ]
+		then
+			runfixdir
+			runstart
+			startnew=n
+			retval=$?
+		else 
+			runstart 
+			retval=$?
+		fi
+	
+		#
+		#	check return value
+		#
+	
+		case $retval in
+	
+			#
+			#	normal exit
+			#
+	
+			0)
+				echo "Normal exit ..."
+				exit 0
+				;;
+	
+			#
+			#	an error has occur
+			#
+	
+			1)
+				echo "Exit with fault code 1 ..."
+				exit 0							
+				;;
+	
+			#
+			#	restart gateway
+			#
+	
+			10)
+				echo "Exit and restart ..."
+				restart=y
+				;;
+	
+			#
+			#	restart with new configuration
+			#
+	
+			11)
+				echo "Exit and start new configuration ..."
+				newproj=y
+				;;
+	
+			#
+			#	shut-down gateway
+			#
+	
+			100)
+				echo "Exit and shutdown gateway ..."
+				haltsys=y
+				;;
+	
+			#
+			#	stop and go back to previos shell
+			#
+	
+			102)
+				echo "Exit and logout ..."
+				runstop
+				exit $?
+				;;
+				
+			*)
+				echo "Unknown exit ..."
+				runstop
+				exit 9
+				;;
+				
+		esac	# check return value
+	fi
+done	# do it all

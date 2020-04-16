@@ -1,0 +1,43 @@
+version: "3"
+services:
+  run1:
+    image: somastech/neuron:1.2
+    environment:
+      SERVER: broker.hivemq.com
+      PORT: 1883
+#      USERNAME:
+#      PASSWORD:
+      SERIALNO: 1000000000
+      UUID: 87654321-1234-1234-1234-1234567890ab
+    volumes:
+      - dat1:/home/neuron/dat
+      - /etc/localtime:/etc/localtime:ro ubuntu date
+#    devices:
+      - /dev/bus/usb:/dev/bus/usb
+    ports:
+      - "7681:7681"
+      - "1947:1947"
+    networks:
+      - webnet
+
+  run2:
+    image: somastech/neuron:1.2
+    environment:
+      SERVER: broker.hivemq.com
+      PORT: 1883
+#      USERNAME:
+#      PASSWORD:
+      SERIALNO: 1000000000
+      UUID: 12345678-1234-1234-1234-1234567890ab
+    volumes:
+      - dat2:/home/neuron/dat
+      - /etc/localtime:/etc/localtime:ro ubuntu date
+    ports:
+      - "7682:7681"
+    networks:
+      - webnet
+networks:
+  webnet:
+volumes:
+  dat1:
+  dat2:
